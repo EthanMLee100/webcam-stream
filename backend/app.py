@@ -4,8 +4,7 @@ import cv2
 import os
 import os
 
-from livekit import api
-
+from livekit.api import AccessToken, VideoGrants  # <-- server SDK import
 
 app = Flask(__name__)
 CORS(app)
@@ -48,28 +47,28 @@ def mjpeg_generator():
 
 @app.route('/webrtc/token', methods=['POST'])
 def get_livekit_token():
-    data = request.get_json()
+    data = request.get_json() or {}
     room = data.get("room", "playground-01")
     identity = data.get("identity", "anonymous")
-    publish = data.get("publish", False)
+    publish = bool(data.get("publish", False))
 
-    # Create a token grant for the given room/identity
-    grant = api.VideoGrant(room=room)
-    grant.can_subscribe = True
-    grant.can_publish = publish
-    grant.can_publish_data = True
-
-    # Create access token using your API key/secret from Render env
-    access_token = api.AccessToken(
-        os.environ.get("LIVEKIT_API_KEY"),
-        os.environ.get("LIVEKIT_API_SECRET"),
-        identity=identity
+    # Build grants (permissions)
+    grants = VideoGrants(
+        room_join=True,
+        room=room,
+        can_publish=publish,
+        can_subscribe=True,
+        can_publish_data=True,
     )
-    access_token.add_grant(grant)
 
-    # Token expires after 1 hour (default)
-    token = access_token.to_jwt()
+    token = (
+        AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
+        .with_identity(identity)
+        .with_grants(grants)
+        .to_jwt()
+    )
     return jsonify({"token": token})
+
 
 
 

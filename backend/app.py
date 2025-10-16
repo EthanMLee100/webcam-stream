@@ -1,6 +1,11 @@
-from flask import Flask, Response
+from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 import cv2
+import os
+import os
+
+from livekit import api
+
 
 app = Flask(__name__)
 CORS(app)
@@ -40,6 +45,34 @@ def mjpeg_generator():
                b'Content-Length: ' + str(len(bytes_frame)).encode() + b'\r\n\r\n' +
                bytes_frame + b'\r\n')
 
+
+@app.route('/webrtc/token', methods=['POST'])
+def get_livekit_token():
+    data = request.get_json()
+    room = data.get("room", "playground-01")
+    identity = data.get("identity", "anonymous")
+    publish = data.get("publish", False)
+
+    # Create a token grant for the given room/identity
+    grant = api.VideoGrant(room=room)
+    grant.can_subscribe = True
+    grant.can_publish = publish
+    grant.can_publish_data = True
+
+    # Create access token using your API key/secret from Render env
+    access_token = api.AccessToken(
+        os.environ.get("LIVEKIT_API_KEY"),
+        os.environ.get("LIVEKIT_API_SECRET"),
+        identity=identity
+    )
+    access_token.add_grant(grant)
+
+    # Token expires after 1 hour (default)
+    token = access_token.to_jwt()
+    return jsonify({"token": token})
+
+
+
 @app.route('/video_feed')
 def video_feed():
     return Response(mjpeg_generator(),
@@ -58,4 +91,4 @@ def index():
 
 if __name__ == '__main__':
     # Bind on LAN so phones/other PCs can view
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

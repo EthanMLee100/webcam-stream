@@ -1,4 +1,4 @@
 flask
 flask-cors
 opencv-python
-livekit-server-sdk
+livekit

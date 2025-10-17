@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { connect, createLocalTracks, RoomEvent } from "livekit-client";
+import { Room, createLocalTracks, RoomEvent } from "livekit-client";
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
@@ -28,10 +28,8 @@ export default function Live() {
     const identity = publish ? `pub-${Date.now()}` : `sub-${Date.now()}`;
     const token = await getToken({ publish, identity });
 
-    const r = await connect(LIVEKIT_URL, token, {
-      // auto-subscribe to tracks on join
-      autoSubscribe: !publish,
-    });
+    const r = new Room({ autoSubscribe: !publish });
+    await r.connect(LIVEKIT_URL, token);
 
     setRoom(r);
 

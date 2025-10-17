@@ -9,17 +9,20 @@ app = Flask(__name__)
 
 # ... your other imports
 
+app.url_map.strict_slashes = False
 
 # Replace with your actual Vercel domain
-ALLOWED_ORIGINS = ["webcam-stream-omega.vercel.app"]
 
+
+# TEMP: open CORS wide for debugging. Tighten later.
 CORS(
     app,
-    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    resources={r"/*": {"origins": r".*vercel\.app$"}},  # any vercel.app subdomain
     supports_credentials=False,
     methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
 
 
 # Try camera index 0 first; if you have other cameras, try 1, 2, etc.
@@ -58,7 +61,8 @@ def mjpeg_generator():
                bytes_frame + b'\r\n')
 
 
-@app.route('/webrtc/token', methods=['POST'])
+
+@app.route('/webrtc/token', methods=['POST', 'OPTIONS'])
 def get_livekit_token():
     data = request.get_json() or {}
     room = data.get("room", "playground-01")
@@ -73,7 +77,11 @@ def get_livekit_token():
         can_subscribe=True,
         can_publish_data=True,
     )
-
+def webrtc_token():
+    if request.method == 'OPTIONS':
+        # Preflight — return empty 204 with CORS headers (added by flask-cors)
+        return ('', 204)
+    
     token = (
         AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
         .with_identity(identity)
@@ -100,6 +108,14 @@ def index():
       </body>
     </html>
     '''
+@app.after_request
+def add_cors_headers(resp):
+    # Safety net: make sure these are present even on errors
+    resp.headers.setdefault('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+    resp.headers.setdefault('Vary', 'Origin')
+    resp.headers.setdefault('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    resp.headers.setdefault('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    return resp
 
 if __name__ == '__main__':
     # Bind on LAN so phones/other PCs can view

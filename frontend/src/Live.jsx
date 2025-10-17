@@ -52,27 +52,12 @@ export default function Live() {
 
     setRoom(r);
 
-    // Helper to attach any already-subscribed remote video
-    const attachExisting = () => {
-      for (const [, p] of r.remoteParticipants) {
-        for (const [, pub] of p.tracks) {
-          if (pub.isSubscribed && pub.track && pub.track.kind === 'video' && remoteVideoRef.current) {
-            pub.track.attach(remoteVideoRef.current);
-            return; // attach the first video we find
-          }
-        }
-      }
-    };
-
     // Handle remote tracks (viewer side)
     r.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      if (track.kind === 'video' && remoteVideoRef.current) {
+      if (track.kind === "video" && remoteVideoRef.current) {
         track.attach(remoteVideoRef.current);
       }
     });
-
-    // If a participant is already in the room (publisher joined first), attach immediately
-    attachExisting();
 
     // Publisher: create and publish local video
     if (publish) {

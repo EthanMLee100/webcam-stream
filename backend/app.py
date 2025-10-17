@@ -2,12 +2,25 @@ from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 import cv2
 import os
-import os
 
 from livekit.api import AccessToken, VideoGrants  # <-- server SDK import
 
 app = Flask(__name__)
-CORS(app)
+
+# ... your other imports
+
+
+# Replace with your actual Vercel domain
+ALLOWED_ORIGINS = ["webcam-stream-omega.vercel.app"]
+
+CORS(
+    app,
+    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    supports_credentials=False,
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
 
 # Try camera index 0 first; if you have other cameras, try 1, 2, etc.
 cap = cv2.VideoCapture(0)

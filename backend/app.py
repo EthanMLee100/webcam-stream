@@ -17,7 +17,15 @@ app.url_map.strict_slashes = False
 # TEMP: open CORS wide for debugging. Tighten later.
 CORS(
     app,
-    resources={r"/*": {"origins": r".*vercel\.app$"}},  # any vercel.app subdomain
+    resources={
+        r"/*": {
+            "origins": [
+                r".*vercel\.app$",           # deployed Vercel domains
+                "http://localhost:5173",     # local Vite dev
+                "http://127.0.0.1:5173",     # local Vite dev
+            ]
+        }
+    },
     supports_credentials=False,
     methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
@@ -63,7 +71,9 @@ def mjpeg_generator():
 
 
 @app.route('/webrtc/token', methods=['POST', 'OPTIONS'])
-def get_livekit_token():
+def webrtc_token_unused():
+    if request.method == 'OPTIONS':
+        return ('', 204)
     data = request.get_json() or {}
     room = data.get("room", "playground-01")
     identity = data.get("identity", "anonymous")
@@ -77,6 +87,19 @@ def get_livekit_token():
         can_subscribe=True,
         can_publish_data=True,
     )
+    try:
+        api_key = os.environ["LIVEKIT_API_KEY"]
+        api_secret = os.environ["LIVEKIT_API_SECRET"]
+    except KeyError as e:
+        return jsonify({"error": f"Missing environment variable: {e.args[0]}"}), 500
+
+    token = (
+        AccessToken(api_key, api_secret)
+        .with_identity(identity)
+        .with_grants(grants)
+        .to_jwt()
+    )
+    return jsonify({"token": token})
 def webrtc_token():
     if request.method == 'OPTIONS':
         # Preflight — return empty 204 with CORS headers (added by flask-cors)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Room, RemoteParticipant, createLocalTracks } from "livekit-client";
+import { connect, createLocalTracks, RoomEvent } from "livekit-client";
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
@@ -28,7 +28,7 @@ export default function Live() {
     const identity = publish ? `pub-${Date.now()}` : `sub-${Date.now()}`;
     const token = await getToken({ publish, identity });
 
-    const r = await Room.connect(LIVEKIT_URL, token, {
+    const r = await connect(LIVEKIT_URL, token, {
       // auto-subscribe to tracks on join
       autoSubscribe: !publish,
     });
@@ -36,7 +36,7 @@ export default function Live() {
     setRoom(r);
 
     // Handle remote tracks (viewer side)
-    r.on("trackSubscribed", (track, publication, participant) => {
+    r.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
       if (track.kind === "video" && remoteVideoRef.current) {
         track.attach(remoteVideoRef.current);
       }

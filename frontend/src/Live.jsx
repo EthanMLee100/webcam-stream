@@ -3,6 +3,7 @@ import { Room, createLocalTracks, RoomEvent } from "livekit-client";
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
+const API_BASE = import.meta.env.VITE_API_URL || (TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : "");
 const ROOM_NAME = "playground-01"; // use one per site/camera
 
 export default function Live() {
@@ -11,6 +12,9 @@ export default function Live() {
   const [error, setError] = useState("");
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState("");
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('authToken') || "");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const videoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
@@ -32,11 +36,63 @@ export default function Live() {
   async function getToken({ publish, identity }) {
     const res = await fetch(TOKEN_ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
       body: JSON.stringify({ room: ROOM_NAME, identity, publish }),
     });
     const { token } = await res.json();
     return token;
+  }
+
+  async function doLogin(e) {
+    e?.preventDefault?.();
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        throw new Error(msg.error || `Login failed (${res.status})`);
+      }
+      const data = await res.json();
+      localStorage.setItem('authToken', data.token);
+      setAuthToken(data.token);
+      setUsername(""); setPassword("");
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+  }
+
+  async function doRegister(e) {
+    e?.preventDefault?.();
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        throw new Error(msg.error || `Register failed (${res.status})`);
+      }
+      const data = await res.json();
+      localStorage.setItem('authToken', data.token);
+      setAuthToken(data.token);
+      setUsername(""); setPassword("");
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem('authToken');
+    setAuthToken("");
   }
 
   async function connectRoom(publish) {
@@ -112,9 +168,22 @@ export default function Live() {
     <div style={{ padding: 16, color: "white", background: "#0f172a", minHeight: "100vh" }}>
       <h1>Live</h1>
       <p>Status: {status}</p>
+      {!authToken ? (
+        <form onSubmit={doLogin} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+          <input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <input placeholder="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button type="submit">Login</button>
+          <button type="button" onClick={doRegister}>Register</button>
+        </form>
+      ) : (
+        <div style={{ marginBottom: 12 }}>
+          <span>Logged in</span>
+          <button style={{ marginLeft: 8 }} onClick={logout}>Logout</button>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={() => connectRoom(true)} disabled={status !== "idle"}>Go Live (Publish)</button>
-        <button onClick={() => connectRoom(false)} disabled={status !== "idle"}>View Live</button>
+        <button onClick={() => connectRoom(true)} disabled={status !== "idle" || !authToken}>Go Live (Publish)</button>
+        <button onClick={() => connectRoom(false)} disabled={status !== "idle" || !authToken}>View Live</button>
         <button onClick={disconnectRoom} disabled={status === "idle"}>Stop</button>
       </div>
 

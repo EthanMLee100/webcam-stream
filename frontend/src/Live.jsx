@@ -165,9 +165,10 @@ export default function Live() {
   }
 
   return (
-    <div style={{ padding: 16, color: "white", background: "#0f172a", minHeight: "100vh" }}>
-      <h1>Live</h1>
-      <p>Status: {status}</p>
+    <div style={{ minHeight: "100vh", background: "#0f172a", color: "white", width: "100%" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
+        <h1 style={{ marginTop: 0, marginBottom: 12 }}>Live</h1>
+        <p style={{ marginTop: 0 }}>Status: {status}</p>
       {!authToken ? (
         <form onSubmit={doLogin} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
           <input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} />
@@ -181,7 +182,7 @@ export default function Live() {
           <button style={{ marginLeft: 8 }} onClick={logout}>Logout</button>
         </div>
       )}
-      <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={() => connectRoom(true)} disabled={status !== "idle" || !authToken}>Go Live (Publish)</button>
         <button onClick={() => connectRoom(false)} disabled={status !== "idle" || !authToken}>View Live</button>
         <button onClick={disconnectRoom} disabled={status === "idle"}>Stop</button>
@@ -207,16 +208,28 @@ export default function Live() {
         </div>
       )}
 
-      {/* Local preview for publisher */}
-      <div style={{ marginBottom: 16 }}>
-        <h3>Local (publisher preview)</h3>
-        <video ref={videoRef} autoPlay playsInline muted style={{ width: 480, background: "#111", borderRadius: 8 }} />
+      {/* Videos grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 24 }}>
+        <div>
+          <h3 style={{ marginTop: 0 }}>Local (publisher preview)</h3>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{ width: "100%", display: "block", background: "#111", borderRadius: 8, aspectRatio: "16 / 9" }}
+          />
+        </div>
+        <div>
+          <h3 style={{ marginTop: 0 }}>Remote (viewer)</h3>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            style={{ width: "100%", display: "block", background: "#111", borderRadius: 8, aspectRatio: "16 / 9" }}
+          />
+        </div>
       </div>
-
-      {/* Remote for viewer */}
-      <div>
-        <h3>Remote (viewer)</h3>
-        <video ref={remoteVideoRef} autoPlay playsInline style={{ width: 480, background: "#111", borderRadius: 8 }} />
       </div>
     </div>
   );

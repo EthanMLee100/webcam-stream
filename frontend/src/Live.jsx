@@ -13,8 +13,6 @@ export default function Live() {
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState("");
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('authToken') || "");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const videoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
@@ -46,54 +44,12 @@ export default function Live() {
     return token;
   }
 
-  async function doLogin(e) {
-    e?.preventDefault?.();
-    setError("");
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      if (!res.ok) {
-        const msg = await res.json().catch(() => ({}));
-        throw new Error(msg.error || `Login failed (${res.status})`);
-      }
-      const data = await res.json();
-      localStorage.setItem('authToken', data.token);
-      setAuthToken(data.token);
-      setUsername(""); setPassword("");
-    } catch (e) {
-      setError(e.message || String(e));
-    }
-  }
-
-  async function doRegister(e) {
-    e?.preventDefault?.();
-    setError("");
-    try {
-      const res = await fetch(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      if (!res.ok) {
-        const msg = await res.json().catch(() => ({}));
-        throw new Error(msg.error || `Register failed (${res.status})`);
-      }
-      const data = await res.json();
-      localStorage.setItem('authToken', data.token);
-      setAuthToken(data.token);
-      setUsername(""); setPassword("");
-    } catch (e) {
-      setError(e.message || String(e));
-    }
-  }
-
-  function logout() {
-    localStorage.removeItem('authToken');
-    setAuthToken("");
-  }
+  // Read token if changed from Home
+  useEffect(() => {
+    const onStorage = () => setAuthToken(localStorage.getItem('authToken') || "");
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   async function connectRoom(publish) {
     setStatus("connecting");
@@ -167,19 +123,17 @@ export default function Live() {
   return (
     <div style={{ minHeight: "100vh", background: "#0f172a", color: "white", width: "100%" }}>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
-        <h1 style={{ marginTop: 0, marginBottom: 12 }}>Live</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <h1 style={{ marginTop: 0, marginBottom: 12 }}>Live</h1>
+          {typeof onBack === 'function' && (
+            <button onClick={onBack}>Back</button>
+          )}
+        </div>
         <p style={{ marginTop: 0 }}>Status: {status}</p>
-      {!authToken ? (
-        <form onSubmit={doLogin} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-          <input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} />
-          <input placeholder="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="submit">Login</button>
-          <button type="button" onClick={doRegister}>Register</button>
-        </form>
-      ) : (
-        <div style={{ marginBottom: 12 }}>
-          <span>Logged in</span>
-          <button style={{ marginLeft: 8 }} onClick={logout}>Logout</button>
+
+      {!authToken && (
+        <div style={{ color: '#fbbf24', marginBottom: 12 }}>
+          Please login from the home screen to publish or view.
         </div>
       )}
       <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>

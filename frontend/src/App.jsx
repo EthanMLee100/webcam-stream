@@ -4,7 +4,8 @@ import Live from "./Live.jsx";
 import Events from "./Events.jsx";
 
 const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
-const API_BASE = import.meta.env.VITE_API_URL || (TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : "");
+// Prefer origin of TOKEN_ENDPOINT to avoid mismatched API URLs
+const API_BASE = TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : (import.meta.env.VITE_API_URL || "");
 
 export default function App() {
   const [view, setView] = useState("home"); // 'home' | 'live' | 'events'
@@ -31,7 +32,7 @@ export default function App() {
       setAuthToken(data.token);
       setUsername(""); setPassword("");
     } catch (e) {
-      setError(e.message || String(e));
+      setError((e && e.message) ? `${e.message} [API: ${API_BASE}]` : `Request failed [API: ${API_BASE}]`);
     }
   }
 
@@ -53,7 +54,7 @@ export default function App() {
       setAuthToken(data.token);
       setUsername(""); setPassword("");
     } catch (e) {
-      setError(e.message || String(e));
+      setError((e && e.message) ? `${e.message} [API: ${API_BASE}]` : `Request failed [API: ${API_BASE}]`);
     }
   }
 

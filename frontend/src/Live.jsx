@@ -6,7 +6,7 @@ const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
 const API_BASE = import.meta.env.VITE_API_URL || (TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : "");
 const ROOM_NAME = "playground-01"; // use one per site/camera
 
-export default function Live() {
+export default function Live({ onBack }) {
   const [room, setRoom] = useState(null);
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");

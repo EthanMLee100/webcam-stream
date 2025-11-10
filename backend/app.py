@@ -2,10 +2,12 @@ from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 import cv2
 import os
-import sqlite3
 from datetime import datetime, timedelta, timezone
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
+import psycopg2
+import psycopg2.extras
+from psycopg2 import errors as pg_errors
 
 from livekit.api import AccessToken, VideoGrants  # <-- server SDK import
 
@@ -74,31 +76,40 @@ def mjpeg_generator():
 
 
 
-DB_PATH = os.environ.get("AUTH_DB_PATH", os.path.join(os.path.dirname(__file__), "auth.db"))
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    # Fallback to provided Neon DSN if env not set (for local/dev). Prefer setting env in Render.
+    "postgresql://neondb_owner:npg_ek5PG9mRDJxW@ep-long-dream-aemp6jrl-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+)
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_EXPIRE_DAYS = int(os.environ.get("JWT_EXPIRE_DAYS", "7"))
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    # Note: psycopg2 returns tuples by default; we'll use RealDictCursor where needed.
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 
 def init_db():
+    # Create users table if it doesn't exist. Keeps it generic (TEXT) to avoid requiring extensions.
+    ddl = (
+        "CREATE TABLE IF NOT EXISTS users ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " username TEXT NOT NULL UNIQUE,"
+        " password_hash TEXT NOT NULL,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ");"
+    )
+    idx = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users ((lower(username)));"
+    )
     conn = get_db()
     try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.commit()
+        with conn, conn.cursor() as cur:
+            cur.execute(ddl)
+            # Unique index on lower(username) ensures case-insensitive uniqueness regardless of column type
+            cur.execute(idx)
     finally:
         conn.close()
 
@@ -137,12 +148,13 @@ def register():
     pw_hash = generate_password_hash(password)
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-            (username, pw_hash, datetime.utcnow().isoformat()),
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+                    (username, pw_hash),
+                )
+    except (psycopg2.IntegrityError, pg_errors.UniqueViolation):
         return jsonify({"error": "username already exists"}), 409
     finally:
         conn.close()
@@ -161,7 +173,10 @@ def login():
 
     conn = get_db()
     try:
-        row = conn.execute("SELECT username, password_hash FROM users WHERE username = ?", (username,)).fetchone()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Case-insensitive match regardless of schema (TEXT vs CITEXT)
+            cur.execute("SELECT username, password_hash FROM users WHERE lower(username) = lower(%s)", (username,))
+            row = cur.fetchone()
     finally:
         conn.close()
     if not row or not check_password_hash(row["password_hash"], password):

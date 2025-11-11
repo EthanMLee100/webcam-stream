@@ -5,3 +5,4 @@ livekit-api
 PyJWT
 psycopg2-binary
 requests
+firebase-admin

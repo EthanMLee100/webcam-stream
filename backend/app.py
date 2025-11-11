@@ -13,6 +13,14 @@ import hashlib
 import re
 import time
 import requests
+import json
+
+# Firebase Admin (Storage)
+try:
+    import firebase_admin
+    from firebase_admin import credentials as fb_credentials, storage as fb_storage
+except Exception:
+    firebase_admin = None
 
 from livekit.api import AccessToken, VideoGrants  # <-- server SDK import
 
@@ -97,6 +105,12 @@ FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")  # e.g., https://you
 RESET_TOKEN_TTL_MIN = int(os.environ.get("RESET_TOKEN_TTL_MIN", "60"))
 FORGOT_RATE_PER_HOUR = int(os.environ.get("FORGOT_RATE_PER_HOUR", "3"))
 
+# Firebase envs
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
+FIREBASE_STORAGE_BUCKET = os.environ.get("FIREBASE_STORAGE_BUCKET", "")
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+FIREBASE_SERVICE_ACCOUNT_BASE64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BASE64", "")
+
 
 def get_db():
     # Note: psycopg2 returns tuples by default; we'll use RealDictCursor where needed.
@@ -131,6 +145,20 @@ def init_db():
     idx_prt = (
         "CREATE UNIQUE INDEX IF NOT EXISTS prt_token_hash_idx ON password_reset_tokens (token_hash);"
     )
+    ddl_events = (
+        "CREATE TABLE IF NOT EXISTS events ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " operator_email TEXT NOT NULL,"
+        " device_id TEXT,"
+        " event_type TEXT,"
+        " storage_path TEXT NOT NULL,"
+        " duration_seconds NUMERIC,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ");"
+    )
+    idx_events_email = (
+        "CREATE INDEX IF NOT EXISTS events_operator_email_lower_idx ON events ((lower(operator_email)));"
+    )
     conn = get_db()
     try:
         with conn, conn.cursor() as cur:
@@ -138,8 +166,34 @@ def init_db():
             cur.execute(idx_email)
             cur.execute(ddl_prt)
             cur.execute(idx_prt)
+            cur.execute(ddl_events)
+            cur.execute(idx_events_email)
     finally:
         conn.close()
+
+
+def init_firebase():
+    if firebase_admin is None:
+        return False
+    if firebase_admin._apps:
+        return True
+    try:
+        if FIREBASE_SERVICE_ACCOUNT_JSON:
+            info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+        elif FIREBASE_SERVICE_ACCOUNT_BASE64:
+            info = json.loads(
+                base64.b64decode(FIREBASE_SERVICE_ACCOUNT_BASE64).decode("utf-8")
+            )
+        else:
+            return False
+        cred = fb_credentials.Certificate(info)
+        firebase_admin.initialize_app(cred, {
+            'projectId': FIREBASE_PROJECT_ID or info.get('project_id', ''),
+            'storageBucket': FIREBASE_STORAGE_BUCKET,
+        })
+        return True
+    except Exception:
+        return False
 
 
 def create_jwt(username: str) -> str:
@@ -380,6 +434,124 @@ def auth_reset():
         return jsonify({"ok": True})
     finally:
         conn.close()
+
+
+# Events: upload (device/operator) and list (operator)
+@app.route('/events/upload', methods=['POST'])
+def events_upload():
+    payload = verify_jwt(request.headers.get('Authorization', ''))
+    if not payload:
+        return jsonify({"error": "unauthorized"}), 401
+    operator_email = (payload.get('sub') or '').strip()
+    if not operator_email:
+        return jsonify({"error": "unauthorized"}), 401
+
+    if not init_firebase():
+        return jsonify({"error": "storage not configured"}), 500
+
+    if 'file' not in request.files:
+        return jsonify({"error": "file missing"}), 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return jsonify({"error": "invalid file"}), 400
+
+    event_type = (request.form.get('event_type') or '').strip() or None
+    device_id = (request.form.get('device_id') or '').strip() or None
+    try:
+        duration_seconds = float(request.form.get('duration_seconds')) if request.form.get('duration_seconds') else None
+    except Exception:
+        duration_seconds = None
+
+    # Build storage path: events/<email>/<timestamp>_<filename>
+    safe_email = operator_email.replace('/', '_').lower()
+    ts = int(time.time())
+    base_name = f.filename.rsplit('/', 1)[-1]
+    storage_path = f"events/{safe_email}/{ts}_{base_name}"
+
+    try:
+        bucket = fb_storage.bucket(FIREBASE_STORAGE_BUCKET) if FIREBASE_STORAGE_BUCKET else fb_storage.bucket()
+        blob = bucket.blob(storage_path)
+        blob.upload_from_file(f.stream, content_type=f.mimetype or 'video/mp4')
+    except Exception as e:
+        return jsonify({"error": "upload failed"}), 500
+
+    # Save DB record
+    conn = get_db()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO events (operator_email, device_id, event_type, storage_path, duration_seconds)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (operator_email, device_id, event_type, storage_path, duration_seconds),
+                )
+                row = cur.fetchone()
+                ev_id = row[0] if row else None
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True, "id": ev_id, "path": storage_path})
+
+
+@app.route('/events', methods=['GET'])
+def events_list():
+    payload = verify_jwt(request.headers.get('Authorization', ''))
+    if not payload:
+        return jsonify({"error": "unauthorized"}), 401
+    operator_email = (payload.get('sub') or '').strip()
+    if not operator_email:
+        return jsonify({"error": "unauthorized"}), 401
+
+    if not init_firebase():
+        return jsonify({"error": "storage not configured"}), 500
+
+    limit = 50
+    try:
+        if request.args.get('limit'):
+            limit = min(100, max(1, int(request.args['limit'])))
+    except Exception:
+        pass
+
+    conn = get_db()
+    rows = []
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, operator_email, device_id, event_type, storage_path, duration_seconds, created_at
+                FROM events
+                WHERE lower(operator_email) = lower(%s)
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (operator_email, limit),
+            )
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    # attach signed URLs
+    bucket = fb_storage.bucket(FIREBASE_STORAGE_BUCKET) if FIREBASE_STORAGE_BUCKET else fb_storage.bucket()
+    out = []
+    for r in rows:
+        blob = bucket.blob(r['storage_path'])
+        try:
+            url = blob.generate_signed_url(expiration=timedelta(hours=1))
+        except Exception:
+            url = None
+        out.append({
+            "id": r['id'],
+            "event_type": r.get('event_type'),
+            "created_at": r.get('created_at').isoformat() if r.get('created_at') else None,
+            "duration_seconds": float(r['duration_seconds']) if r.get('duration_seconds') is not None else None,
+            "device_id": r.get('device_id'),
+            "url": url,
+        })
+
+    return jsonify({"items": out})
 
 
 @app.route('/webrtc/token', methods=['POST', 'OPTIONS'])

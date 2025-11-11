@@ -8,6 +8,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 import psycopg2.extras
 from psycopg2 import errors as pg_errors
+import secrets
+import hashlib
+import re
+import time
+import requests
 
 from livekit.api import AccessToken, VideoGrants  # <-- server SDK import
 
@@ -84,6 +89,14 @@ DATABASE_URL = os.environ.get(
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_EXPIRE_DAYS = int(os.environ.get("JWT_EXPIRE_DAYS", "7"))
 
+# Email + reset configuration (use env in production)
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
+FROM_NAME = os.environ.get("FROM_NAME", "")
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")  # e.g., https://your-app.vercel.app
+RESET_TOKEN_TTL_MIN = int(os.environ.get("RESET_TOKEN_TTL_MIN", "60"))
+FORGOT_RATE_PER_HOUR = int(os.environ.get("FORGOT_RATE_PER_HOUR", "3"))
+
 
 def get_db():
     # Note: psycopg2 returns tuples by default; we'll use RealDictCursor where needed.
@@ -135,55 +148,72 @@ def verify_jwt(auth_header: str):
         return None
 
 
+EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
+
+
 @app.route('/auth/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
     password = data.get("password") or ""
-    if not username or not password:
-        return jsonify({"error": "username and password required"}), 400
-    if len(username) < 3 or len(password) < 6:
-        return jsonify({"error": "username >= 3 chars and password >= 6 chars"}), 400
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
+    if not EMAIL_RE.fullmatch(email):
+        return jsonify({"error": "invalid email"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
 
     pw_hash = generate_password_hash(password)
     conn = get_db()
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
-                    (username, pw_hash),
-                )
+                # users table (email-first) or legacy users with username-only schema
+                try:
+                    cur.execute(
+                        "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
+                        (email, pw_hash),
+                    )
+                except pg_errors.UndefinedColumn:
+                    # Fallback for legacy schema (not expected after migration)
+                    cur.execute(
+                        "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+                        (email, pw_hash),
+                    )
     except (psycopg2.IntegrityError, pg_errors.UniqueViolation):
-        return jsonify({"error": "username already exists"}), 409
+        return jsonify({"error": "account already exists"}), 409
     finally:
         conn.close()
 
-    token = create_jwt(username)
-    return jsonify({"token": token, "username": username})
+    token = create_jwt(email)
+    return jsonify({"token": token, "email": email})
 
 
 @app.route('/auth/login', methods=['POST'])
 def login():
     data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
     password = data.get("password") or ""
-    if not username or not password:
-        return jsonify({"error": "username and password required"}), 400
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
 
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Case-insensitive match regardless of schema (TEXT vs CITEXT)
-            cur.execute("SELECT username, password_hash FROM users WHERE lower(username) = lower(%s)", (username,))
+            # Case-insensitive match
+            # Prefer email, but support legacy username if email column missing
+            try:
+                cur.execute("SELECT email, password_hash FROM users WHERE lower(email) = lower(%s)", (email,))
+            except pg_errors.UndefinedColumn:
+                cur.execute("SELECT username AS email, password_hash FROM users WHERE lower(username) = lower(%s)", (email,))
             row = cur.fetchone()
     finally:
         conn.close()
     if not row or not check_password_hash(row["password_hash"], password):
         return jsonify({"error": "invalid credentials"}), 401
 
-    token = create_jwt(username)
-    return jsonify({"token": token, "username": username})
+    token = create_jwt(row.get("email") or email)
+    return jsonify({"token": token, "email": row.get("email") or email})
 
 
 @app.route('/auth/me', methods=['GET'])
@@ -191,7 +221,150 @@ def me():
     payload = verify_jwt(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"username": payload.get("sub")})
+    return jsonify({"email": payload.get("sub")})
+
+
+# In-memory rate limiter for /auth/forgot (email+ip)
+_forgot_hits = {}
+_FORGOT_WINDOW_SEC = 3600
+
+
+def _rate_ok(email_lower: str, ip: str) -> bool:
+    now = time.time()
+    key = (email_lower, ip or "")
+    arr = _forgot_hits.get(key, [])
+    # prune
+    arr = [t for t in arr if now - t < _FORGOT_WINDOW_SEC]
+    if len(arr) >= FORGOT_RATE_PER_HOUR:
+        _forgot_hits[key] = arr
+        return False
+    arr.append(now)
+    _forgot_hits[key] = arr
+    return True
+
+
+def _send_reset_email(to_email: str, reset_link: str):
+    if not (SENDGRID_API_KEY and FROM_EMAIL):
+        # Log-only mode if not configured
+        return
+    payload = {
+        "personalizations": [{
+            "to": [{"email": to_email}],
+            "subject": "Password reset"
+        }],
+        "from": {"email": FROM_EMAIL, "name": FROM_NAME or ""},
+        "content": [{
+            "type": "text/plain",
+            "value": f"We received a password reset request.\n\nClick to reset: {reset_link}\n\nIf you didn't request this, ignore this email."
+        }]
+    }
+    try:
+        requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+@app.route('/auth/forgot', methods=['POST'])
+def auth_forgot():
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip()
+    # Always 200; do not reveal whether the account exists
+    status = 200
+    try:
+        if not email or not EMAIL_RE.fullmatch(email):
+            return ('', status)
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not _rate_ok(email.lower(), ip or ""):
+            return ('', status)
+        # Lookup user id
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("SELECT id FROM users WHERE lower(email) = lower(%s)", (email,))
+                except pg_errors.UndefinedColumn:
+                    cur.execute("SELECT id FROM users WHERE lower(username) = lower(%s)", (email,))
+                row = cur.fetchone()
+            if not row:
+                return ('', status)
+            user_id = row[0]
+            # Create token
+            token = secrets.token_urlsafe(48)
+            token_hash = hashlib.sha256(token.encode()).hexdigest()
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_TTL_MIN)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                            id BIGSERIAL PRIMARY KEY,
+                            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                            token_hash TEXT NOT NULL,
+                            expires_at TIMESTAMPTZ NOT NULL,
+                            used_at TIMESTAMPTZ,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                        )
+                        """
+                    )
+                    cur.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS prt_token_hash_idx ON password_reset_tokens (token_hash)"
+                    )
+                    cur.execute(
+                        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
+                        (user_id, token_hash, expires_at),
+                    )
+            # Build link using query param on home: /?reset_token=
+            if FRONTEND_BASE_URL:
+                link = f"{FRONTEND_BASE_URL.rstrip('/')}/?reset_token={token}"
+                _send_reset_email(email, link)
+        finally:
+            conn.close()
+    except Exception:
+        # Do not leak errors
+        return ('', status)
+    return ('', status)
+
+
+@app.route('/auth/reset', methods=['POST'])
+def auth_reset():
+    data = request.get_json() or {}
+    token = (data.get("token") or "").strip()
+    new_password = data.get("password") or ""
+    if not token or len(new_password) < 6:
+        return jsonify({"error": "invalid token or password"}), 400
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = %s",
+                (token_hash,),
+            )
+            row = cur.fetchone()
+        if not row or row.get('used_at') or row.get('expires_at') < now:
+            return jsonify({"error": "invalid or expired token"}), 400
+        pw_hash = generate_password_hash(new_password)
+        with conn:
+            with conn.cursor() as cur:
+                # Update password
+                try:
+                    cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (pw_hash, row['user_id']))
+                except pg_errors.UndefinedColumn:
+                    cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (pw_hash, row['user_id']))
+                # Mark token used
+                cur.execute("UPDATE password_reset_tokens SET used_at = %s WHERE id = %s", (now, row['id']))
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
 
 
 @app.route('/webrtc/token', methods=['POST', 'OPTIONS'])

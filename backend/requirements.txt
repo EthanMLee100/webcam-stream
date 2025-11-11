@@ -4,3 +4,4 @@ opencv-python
 livekit-api
 PyJWT
 psycopg2-binary
+requests

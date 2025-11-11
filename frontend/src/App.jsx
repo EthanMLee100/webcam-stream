@@ -10,18 +10,21 @@ const API_BASE = TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : (import.meta.
 export default function App() {
   const [view, setView] = useState("home"); // 'home' | 'live' | 'events'
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('authToken') || "");
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.search).get('reset_token') || "");
 
   async function doLogin(e) {
     e?.preventDefault?.();
     setError("");
+    setInfo("");
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ email, password })
       });
       if (!res.ok) {
         const msg = await res.json().catch(() => ({}));
@@ -30,7 +33,7 @@ export default function App() {
       const data = await res.json();
       localStorage.setItem('authToken', data.token);
       setAuthToken(data.token);
-      setUsername(""); setPassword("");
+      setEmail(""); setPassword("");
     } catch (e) {
       setError((e && e.message) ? `${e.message} [API: ${API_BASE}]` : `Request failed [API: ${API_BASE}]`);
     }
@@ -39,11 +42,12 @@ export default function App() {
   async function doRegister(e) {
     e?.preventDefault?.();
     setError("");
+    setInfo("");
     try {
       const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ email, password })
       });
       if (!res.ok) {
         const msg = await res.json().catch(() => ({}));
@@ -52,9 +56,50 @@ export default function App() {
       const data = await res.json();
       localStorage.setItem('authToken', data.token);
       setAuthToken(data.token);
-      setUsername(""); setPassword("");
+      setEmail(""); setPassword("");
     } catch (e) {
       setError((e && e.message) ? `${e.message} [API: ${API_BASE}]` : `Request failed [API: ${API_BASE}]`);
+    }
+  }
+
+  async function doForgot(e) {
+    e?.preventDefault?.();
+    setError(""); setInfo("");
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      // Always 200; show generic info
+      setInfo('If that email exists, a reset link was sent.');
+    } catch (e) {
+      setError('Unable to request reset right now.');
+    }
+  }
+
+  async function doReset(e) {
+    e?.preventDefault?.();
+    setError(""); setInfo("");
+    try {
+      const res = await fetch(`${API_BASE}/auth/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, password })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Reset failed');
+      }
+      setInfo('Password reset. You can now log in.');
+      setPassword("");
+      // Clear token from URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete('reset_token');
+      window.history.replaceState({}, '', url);
+      setResetToken('');
+    } catch (e) {
+      setError(e.message || 'Reset failed');
     }
   }
 
@@ -78,10 +123,11 @@ export default function App() {
 
         {!authToken ? (
           <form onSubmit={doLogin} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
-            <input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+            <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             <input placeholder="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
             <button type="submit">Login</button>
             <button type="button" onClick={doRegister}>Register</button>
+            <button type="button" onClick={doForgot}>Forgot password</button>
           </form>
         ) : (
           <div style={{ marginBottom: 16 }}>
@@ -93,6 +139,18 @@ export default function App() {
           <div style={{ color: '#fca5a5', marginBottom: 12 }}>
             Error: {error}
           </div>
+        )}
+        {info && (
+          <div style={{ color: '#a7f3d0', marginBottom: 12 }}>
+            {info}
+          </div>
+        )}
+
+        {resetToken && (
+          <form onSubmit={doReset} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+            <input placeholder="new password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <button type="submit">Set new password</button>
+          </form>
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>

@@ -105,24 +105,39 @@ def get_db():
 
 
 def init_db():
-    # Create users table if it doesn't exist. Keeps it generic (TEXT) to avoid requiring extensions.
-    ddl = (
+    # Email-first schema. Create if missing and ensure case-insensitive unique email index.
+    ddl_users = (
         "CREATE TABLE IF NOT EXISTS users ("
         " id BIGSERIAL PRIMARY KEY,"
-        " username TEXT NOT NULL UNIQUE,"
+        " email TEXT NOT NULL,"
         " password_hash TEXT NOT NULL,"
+        " email_verified BOOLEAN NOT NULL DEFAULT false,"
         " created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ");"
     )
-    idx = (
-        "CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users ((lower(username)));"
+    idx_email = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users ((lower(email)));"
+    )
+    ddl_prt = (
+        "CREATE TABLE IF NOT EXISTS password_reset_tokens ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+        " token_hash TEXT NOT NULL,"
+        " expires_at TIMESTAMPTZ NOT NULL,"
+        " used_at TIMESTAMPTZ,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ");"
+    )
+    idx_prt = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS prt_token_hash_idx ON password_reset_tokens (token_hash);"
     )
     conn = get_db()
     try:
         with conn, conn.cursor() as cur:
-            cur.execute(ddl)
-            # Unique index on lower(username) ensures case-insensitive uniqueness regardless of column type
-            cur.execute(idx)
+            cur.execute(ddl_users)
+            cur.execute(idx_email)
+            cur.execute(ddl_prt)
+            cur.execute(idx_prt)
     finally:
         conn.close()
 

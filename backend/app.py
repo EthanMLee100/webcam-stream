@@ -3,6 +3,7 @@ from flask_cors import CORS
 import cv2
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
@@ -552,7 +553,8 @@ def events_upload():
         conn2.close()
 
     if recent_email and FRONTEND_BASE_URL:
-        ts = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+        tz_chicago = ZoneInfo('America/Chicago')
+        ts = datetime.now(tz_chicago).strftime('%Y-%m-%d %H:%M:%S %Z')
         subj = f"New event: {event_type or 'event'}"
         body = (
             f"A new event was uploaded.\n\n"

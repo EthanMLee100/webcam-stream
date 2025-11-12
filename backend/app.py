@@ -132,6 +132,9 @@ def init_db():
     idx_email = (
         "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users ((lower(email)));"
     )
+    alter_users_last_login = (
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;"
+    )
     ddl_prt = (
         "CREATE TABLE IF NOT EXISTS password_reset_tokens ("
         " id BIGSERIAL PRIMARY KEY,"
@@ -164,6 +167,7 @@ def init_db():
         with conn, conn.cursor() as cur:
             cur.execute(ddl_users)
             cur.execute(idx_email)
+            cur.execute(alter_users_last_login)
             cur.execute(ddl_prt)
             cur.execute(idx_prt)
             cur.execute(ddl_events)
@@ -276,6 +280,17 @@ def login():
             except pg_errors.UndefinedColumn:
                 cur.execute("SELECT username AS email, password_hash FROM users WHERE lower(username) = lower(%s)", (email,))
             row = cur.fetchone()
+        # On successful lookup, update last_login_at
+        if row:
+            with conn:
+                with conn.cursor() as cur2:
+                    try:
+                        cur2.execute(
+                            "UPDATE users SET last_login_at = now() WHERE lower(email) = lower(%s)",
+                            (row.get("email") or email,)
+                        )
+                    except Exception:
+                        pass
     finally:
         conn.close()
     if not row or not check_password_hash(row["password_hash"], password):
@@ -325,6 +340,34 @@ def _send_reset_email(to_email: str, reset_link: str):
         "content": [{
             "type": "text/plain",
             "value": f"We received a password reset request.\n\nClick to reset: {reset_link}\n\nIf you didn't request this, ignore this email."
+        }]
+    }
+    try:
+        requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def _send_email(to_email: str, subject: str, text: str):
+    if not (SENDGRID_API_KEY and FROM_EMAIL and to_email):
+        return
+    payload = {
+        "personalizations": [{
+            "to": [{"email": to_email}],
+            "subject": subject
+        }],
+        "from": {"email": FROM_EMAIL, "name": FROM_NAME or ""},
+        "content": [{
+            "type": "text/plain",
+            "value": text
         }]
     }
     try:
@@ -492,6 +535,33 @@ def events_upload():
                 ev_id = row[0] if row else None
     finally:
         conn.close()
+
+    # Email alert to most recent logged-in operator
+    recent_email = None
+    conn2 = get_db()
+    try:
+        with conn2.cursor() as cur:
+            try:
+                cur.execute("SELECT email FROM users WHERE last_login_at IS NOT NULL ORDER BY last_login_at DESC LIMIT 1")
+                r = cur.fetchone()
+                if r:
+                    recent_email = r[0]
+            except Exception:
+                recent_email = None
+    finally:
+        conn2.close()
+
+    if recent_email and FRONTEND_BASE_URL:
+        ts = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+        subj = f"New event: {event_type or 'event'}"
+        body = (
+            f"A new event was uploaded.\n\n"
+            f"Type: {event_type or 'event'}\n"
+            f"Device: {device_id or 'unknown'}\n"
+            f"Time: {ts}\n\n"
+            f"View it on the Events page: {FRONTEND_BASE_URL}"
+        )
+        _send_email(recent_email, subj, body)
 
     return jsonify({"ok": True, "id": ev_id, "path": storage_path})
 

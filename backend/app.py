@@ -605,8 +605,8 @@ def events_list():
     finally:
         conn.close()
 
-    # attach signed URLs
     bucket = fb_storage.bucket(FIREBASE_STORAGE_BUCKET) if FIREBASE_STORAGE_BUCKET else fb_storage.bucket()
+    tz_chicago = ZoneInfo('America/Chicago')
     out = []
     for r in rows:
         blob = bucket.blob(r['storage_path'])
@@ -614,10 +614,14 @@ def events_list():
             url = blob.generate_signed_url(expiration=timedelta(hours=1))
         except Exception:
             url = None
+        created = r.get('created_at')
+        created_iso = created.astimezone(timezone.utc).isoformat() if created else None
+        created_local = created.astimezone(tz_chicago).isoformat() if created else None
         out.append({
             "id": r['id'],
             "event_type": r.get('event_type'),
-            "created_at": r.get('created_at').isoformat() if r.get('created_at') else None,
+            "created_at": created_iso,
+            "created_local": created_local,
             "duration_seconds": float(r['duration_seconds']) if r.get('duration_seconds') is not None else None,
             "device_id": r.get('device_id'),
             "url": url,

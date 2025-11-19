@@ -48,7 +48,15 @@ export default function Events({ onBack }) {
           {items.map((it) => (
             <div key={it.id} style={{ background: '#111', padding: 12, borderRadius: 8 }}>
               <div style={{ marginBottom: 8, fontSize: 14, opacity: 0.9 }}>
-                <strong>{it.event_type || 'event'}</strong> · {it.created_at ? formatter.format(new Date(it.created_at)) : '—'}
+                {(() => {
+                  const iso = it.created_local || it.created_at
+                  const formatted = iso ? formatter.format(new Date(iso)) : '—'
+                  return (
+                    <>
+                      <strong>{it.event_type || 'event'}</strong> · {formatted}
+                    </>
+                  )
+                })()}
               </div>
               {it.url ? (
                 <video controls style={{ width: '100%', borderRadius: 6 }} src={it.url} />

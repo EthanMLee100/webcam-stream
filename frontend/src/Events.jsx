@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 const TOKEN_ENDPOINT = import.meta.env.VITE_TOKEN_ENDPOINT;
 const API_BASE = TOKEN_ENDPOINT ? new URL(TOKEN_ENDPOINT).origin : (import.meta.env.VITE_API_URL || "");
@@ -7,6 +7,11 @@ export default function Events({ onBack }) {
   const [items, setItems] = useState([])
   const [error, setError] = useState("")
   const authToken = localStorage.getItem('authToken') || ""
+  const formatter = useMemo(() => new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }), [])
 
   async function load() {
     setError("")
@@ -43,7 +48,7 @@ export default function Events({ onBack }) {
           {items.map((it) => (
             <div key={it.id} style={{ background: '#111', padding: 12, borderRadius: 8 }}>
               <div style={{ marginBottom: 8, fontSize: 14, opacity: 0.9 }}>
-                <strong>{it.event_type || 'event'}</strong> · {it.created_at?.replace('T', ' ').replace('Z','')}
+                <strong>{it.event_type || 'event'}</strong> · {it.created_at ? formatter.format(new Date(it.created_at)) : '—'}
               </div>
               {it.url ? (
                 <video controls style={{ width: '100%', borderRadius: 6 }} src={it.url} />

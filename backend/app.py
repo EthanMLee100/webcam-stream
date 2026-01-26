@@ -42,6 +42,7 @@ CORS(
             "origins": [
                 r".*vercel\.app$",           # deployed Vercel domains
                 r"app\.flutterflow\.io$",    # FlutterFlow preview
+                r".*flutterflow\.app$",      # FlutterFlow hosted apps/previews
                 "http://localhost:5173",     # local Vite dev
                 "http://127.0.0.1:5173",     # local Vite dev
             ]

@@ -16,10 +16,10 @@ import time
 import requests
 import json
 
-# Firebase Admin (Storage)
+# Firebase Admin (Storage + Auth)
 try:
     import firebase_admin
-    from firebase_admin import credentials as fb_credentials, storage as fb_storage
+    from firebase_admin import credentials as fb_credentials, storage as fb_storage, auth as fb_auth
 except Exception:
     firebase_admin = None
 
@@ -41,6 +41,7 @@ CORS(
         r"/*": {
             "origins": [
                 r".*vercel\.app$",           # deployed Vercel domains
+                r"app\.flutterflow\.io$",    # FlutterFlow preview
                 "http://localhost:5173",     # local Vite dev
                 "http://127.0.0.1:5173",     # local Vite dev
             ]
@@ -222,6 +223,19 @@ def verify_jwt(auth_header: str):
         return None
 
 
+def verify_firebase_token(auth_header: str):
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        if not init_firebase():
+            return None
+        decoded = fb_auth.verify_id_token(token)
+        return decoded
+    except Exception:
+        return None
+
+
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
 
 
@@ -303,10 +317,10 @@ def login():
 
 @app.route('/auth/me', methods=['GET'])
 def me():
-    payload = verify_jwt(request.headers.get('Authorization', ''))
+    payload = verify_firebase_token(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"email": payload.get("sub")})
+    return jsonify({"email": payload.get("email")})
 
 
 # In-memory rate limiter for /auth/forgot (email+ip)
@@ -483,10 +497,10 @@ def auth_reset():
 # Events: upload (device/operator) and list (operator)
 @app.route('/events/upload', methods=['POST'])
 def events_upload():
-    payload = verify_jwt(request.headers.get('Authorization', ''))
+    payload = verify_firebase_token(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
-    operator_email = (payload.get('sub') or '').strip()
+    operator_email = (payload.get('email') or '').strip()
     if not operator_email:
         return jsonify({"error": "unauthorized"}), 401
 
@@ -570,10 +584,10 @@ def events_upload():
 
 @app.route('/events', methods=['GET'])
 def events_list():
-    payload = verify_jwt(request.headers.get('Authorization', ''))
+    payload = verify_firebase_token(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
-    operator_email = (payload.get('sub') or '').strip()
+    operator_email = (payload.get('email') or '').strip()
     if not operator_email:
         return jsonify({"error": "unauthorized"}), 401
 
@@ -635,14 +649,14 @@ def webrtc_token_unused():
     if request.method == 'OPTIONS':
         return ('', 204)
     # Require valid auth for both publish and view
-    payload = verify_jwt(request.headers.get('Authorization', ''))
+    payload = verify_firebase_token(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
 
     data = request.get_json() or {}
     room = data.get("room", "playground-01")
     # Default identity to username from JWT when not provided
-    identity = data.get("identity") or payload.get("sub") or "anonymous"
+    identity = data.get("identity") or payload.get("email") or "anonymous"
     publish = bool(data.get("publish", False))
 
     # Build grants (permissions)

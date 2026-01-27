@@ -15,6 +15,7 @@ import re
 import time
 import requests
 import json
+import base64
 
 # Firebase Admin (Storage + Auth)
 try:

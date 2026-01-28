@@ -50,19 +50,28 @@ CORS(
 
 
 
-# Try camera index 0 first; if you have other cameras, try 1, 2, etc.
-cap = cv2.VideoCapture(0)
+_cap = None
 
-# Optional: force MJPG for smoother USB2.0 webcams like C270
-# Comment out if your driver doesn't like it
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 
-# Set a safe resolution & fps (C270 can do 1280x720 MJPG, but 640x480 is universal)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv2.CAP_PROP_FPS, 30)
+def _get_cap():
+    """Lazy init camera so server can start in headless environments (e.g., Render)."""
+    global _cap
+    if _cap is not None and _cap.isOpened():
+        return _cap
+    # Try camera index 0 first; if you have other cameras, try 1, 2, etc.
+    cap = cv2.VideoCapture(0)
+    # Optional: force MJPG for smoother USB2.0 webcams like C270
+    # Comment out if your driver doesn't like it
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    # Set a safe resolution & fps (C270 can do 1280x720 MJPG, but 640x480 is universal)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    _cap = cap
+    return _cap
 
 def mjpeg_generator():
+    cap = _get_cap()
     if not cap.isOpened():
         raise RuntimeError("Could not open video source")
 

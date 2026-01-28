@@ -546,8 +546,8 @@ def events_upload():
         bucket = fb_storage.bucket(FIREBASE_STORAGE_BUCKET) if FIREBASE_STORAGE_BUCKET else fb_storage.bucket()
         blob = bucket.blob(storage_path)
         blob.upload_from_file(f.stream, content_type=f.mimetype or 'video/mp4')
-    except Exception as e:
-        print(f"[events_upload] Firebase upload failed: {e}")
+    except Exception:
+        app.logger.exception("events_upload Firebase upload failed")
         return jsonify({"error": "upload failed"}), 500
 
     # Save DB record
@@ -565,8 +565,8 @@ def events_upload():
                 )
                 row = cur.fetchone()
                 ev_id = row[0] if row else None
-    except Exception as e:
-        print(f"[events_upload] DB insert failed: {e}")
+    except Exception:
+        app.logger.exception("events_upload DB insert failed")
         return jsonify({"error": "db insert failed"}), 500
     finally:
         conn.close()

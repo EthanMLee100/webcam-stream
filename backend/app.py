@@ -232,6 +232,17 @@ def verify_firebase_token(auth_header: str):
         return None
 
 
+def verify_auth(auth_header: str):
+    """Accept Firebase ID tokens or legacy JWTs. Returns dict with email when valid."""
+    fb = verify_firebase_token(auth_header)
+    if fb and fb.get("email"):
+        return {"email": fb.get("email"), "source": "firebase"}
+    legacy = verify_jwt(auth_header)
+    if legacy and legacy.get("sub"):
+        return {"email": legacy.get("sub"), "source": "jwt"}
+    return None
+
+
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
 
 
@@ -313,7 +324,7 @@ def login():
 
 @app.route('/auth/me', methods=['GET'])
 def me():
-    payload = verify_firebase_token(request.headers.get('Authorization', ''))
+    payload = verify_auth(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"email": payload.get("email")})
@@ -493,7 +504,7 @@ def auth_reset():
 # Events: upload (device/operator) and list (operator)
 @app.route('/events/upload', methods=['POST'])
 def events_upload():
-    payload = verify_firebase_token(request.headers.get('Authorization', ''))
+    payload = verify_auth(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
     operator_email = (payload.get('email') or '').strip()
@@ -580,7 +591,7 @@ def events_upload():
 
 @app.route('/events', methods=['GET'])
 def events_list():
-    payload = verify_firebase_token(request.headers.get('Authorization', ''))
+    payload = verify_auth(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
     operator_email = (payload.get('email') or '').strip()
@@ -645,7 +656,7 @@ def webrtc_token_unused():
     if request.method == 'OPTIONS':
         return ('', 204)
     # Require valid auth for both publish and view
-    payload = verify_firebase_token(request.headers.get('Authorization', ''))
+    payload = verify_auth(request.headers.get('Authorization', ''))
     if not payload:
         return jsonify({"error": "unauthorized"}), 401
 

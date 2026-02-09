@@ -17,10 +17,10 @@ import requests
 import json
 import base64
 
-# Firebase Admin (Storage + Auth)
+# Firebase Admin (Storage + Auth + Firestore + Messaging)
 try:
     import firebase_admin
-    from firebase_admin import credentials as fb_credentials, storage as fb_storage, auth as fb_auth
+    from firebase_admin import credentials as fb_credentials, storage as fb_storage, auth as fb_auth, firestore as fb_firestore, messaging as fb_messaging
 except Exception:
     firebase_admin = None
 
@@ -202,6 +202,41 @@ def init_firebase():
             'projectId': FIREBASE_PROJECT_ID or info.get('project_id', ''),
             'storageBucket': FIREBASE_STORAGE_BUCKET,
         })
+        return True
+    except Exception:
+        return False
+
+
+def _get_most_recent_fcm_token():
+    """Return FCM token of most recently active user, or None."""
+    if not init_firebase():
+        return None
+    try:
+        db = fb_firestore.client()
+        doc = (
+            db.collection("users")
+            .order_by("last_active_at", direction=fb_firestore.Query.DESCENDING)
+            .limit(1)
+            .stream()
+        )
+        for d in doc:
+            data = d.to_dict() or {}
+            token = (data.get("fcm_token") or "").strip()
+            return token or None
+    except Exception:
+        return None
+
+
+def _send_push_notification(title: str, body: str):
+    token = _get_most_recent_fcm_token()
+    if not token:
+        return False
+    try:
+        msg = fb_messaging.Message(
+            notification=fb_messaging.Notification(title=title, body=body),
+            token=token,
+        )
+        fb_messaging.send(msg)
         return True
     except Exception:
         return False
@@ -598,6 +633,12 @@ def events_upload():
             f"View it on the Events page: {FRONTEND_BASE_URL}"
         )
         _send_email(recent_email, subj, body)
+
+    # Push notification to most recently active user (best-effort)
+    _send_push_notification(
+        title=f"New event: {event_type or 'event'}",
+        body=f"Device: {device_id or 'unknown'}",
+    )
 
     return jsonify({"ok": True, "id": ev_id, "path": storage_path})
 

@@ -210,6 +210,7 @@ def init_firebase():
 def _get_most_recent_fcm_token():
     """Return FCM token of most recently active user, or None."""
     if not init_firebase():
+        app.logger.warning("push_notification skipped: firebase init failed")
         return None
     try:
         db = fb_firestore.client()
@@ -222,8 +223,15 @@ def _get_most_recent_fcm_token():
         for d in doc:
             data = d.to_dict() or {}
             token = (data.get("fcm_token") or "").strip()
+            if not token:
+                app.logger.info(
+                    "push_notification skipped: most recent user %s has no fcm_token",
+                    d.id,
+                )
             return token or None
+        app.logger.info("push_notification skipped: no user documents found")
     except Exception:
+        app.logger.exception("push_notification failed: unable to read Firestore users collection")
         return None
 
 
@@ -237,8 +245,10 @@ def _send_push_notification(title: str, body: str):
             token=token,
         )
         fb_messaging.send(msg)
+        app.logger.info("push_notification sent successfully")
         return True
     except Exception:
+        app.logger.exception("push_notification failed during FCM send")
         return False
 
 
@@ -635,10 +645,12 @@ def events_upload():
         _send_email(recent_email, subj, body)
 
     # Push notification to most recently active user (best-effort)
-    _send_push_notification(
+    push_sent = _send_push_notification(
         title=f"New event: {event_type or 'event'}",
         body=f"Device: {device_id or 'unknown'}",
     )
+    if not push_sent:
+        app.logger.info("events_upload completed without push delivery")
 
     return jsonify({"ok": True, "id": ev_id, "path": storage_path})
 

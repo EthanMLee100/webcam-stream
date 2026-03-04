@@ -208,7 +208,7 @@ def init_firebase():
 
 
 def _get_most_recent_fcm_token():
-    """Return FCM token of most recently active user, or None."""
+    """Return newest FCM token for the most recently active user, or None."""
     if not init_firebase():
         app.logger.warning("push_notification skipped: firebase init failed")
         return None
@@ -221,15 +221,26 @@ def _get_most_recent_fcm_token():
             .stream()
         )
         for d in doc:
-            data = d.to_dict() or {}
-            token = (data.get("fcm_token") or "").strip()
+            token_docs = (
+                db.collection("users")
+                .document(d.id)
+                .collection("fcm_tokens")
+                .order_by("created_at", direction=fb_firestore.Query.DESCENDING)
+                .limit(1)
+                .stream()
+            )
+            token = None
+            for token_doc in token_docs:
+                token_data = token_doc.to_dict() or {}
+                token = (token_data.get("fcm_token") or "").strip()
+                break
             if not token:
-                app.logger.info(
-                    "push_notification skipped: most recent user %s has no fcm_token",
+                app.logger.warning(
+                    "push_notification skipped: most recent user %s has no fcm_tokens entry",
                     d.id,
                 )
             return token or None
-        app.logger.info("push_notification skipped: no user documents found")
+        app.logger.warning("push_notification skipped: no user documents found")
     except Exception:
         app.logger.exception("push_notification failed: unable to read Firestore users collection")
         return None
@@ -245,7 +256,7 @@ def _send_push_notification(title: str, body: str):
             token=token,
         )
         fb_messaging.send(msg)
-        app.logger.info("push_notification sent successfully")
+        app.logger.warning("push_notification sent successfully")
         return True
     except Exception:
         app.logger.exception("push_notification failed during FCM send")

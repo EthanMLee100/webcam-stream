@@ -1,20 +1,11 @@
 """
-Pi 4: YOLOv8 Human Detection + RTMPS Livestream (ffmpeg) + Clip Capture + H.264 Convert + Backend Upload
+Pi 4: YOLOv8 Human Detection + RTMPS Livestream (ffmpeg) + Clip Capture (correct speed) + H.264 Convert + Backend Upload
 
-Architecture (like combine_new.py):
-- Thread 1: Capture + Stream
-  * Reads camera frames continuously
-  * Streams EVERY frame to RTMPS via ffmpeg stdin (smooth stream for FlutterFlow)
-  * Updates a shared "latest frame" for ML (no backlog)
-
-- Thread 2: ML (Human detection)
-  * Reads latest frame snapshot
-  * Runs YOLO person detection (optionally downscaled + throttled)
-  * On trigger: records a short clip and uploads (after H.264 conversion)
-
-Notes:
-- Uses system ffmpeg on Pi (install: sudo apt-get install -y ffmpeg)
-- Saves events to: /home/gceja/Desktop/SolarPlaygroundPi/events_human
+Fix for "clips play at 3x speed":
+- Record by FRAME COUNT using the camera's actual FPS
+- Only write when a NEW frame arrives (based on shared timestamp)
+- Use actual_fps for VideoWriter FPS
+- Disable ML throttling while recording so we can capture frames at camera rate
 """
 
 import os
@@ -51,6 +42,7 @@ INFER_W = 640
 INFER_H = 360
 
 # ML throttle (limits how often YOLO runs; streaming unaffected)
+# NOTE: while recording we ignore this throttle so clips record at real FPS
 ML_MAX_FPS = 4.0  # set 0 for "as fast as possible"
 
 # Clip / upload settings
@@ -169,6 +161,9 @@ def start_ffmpeg_stream(w, h, fps, rtmps_url):
     """
     Start ffmpeg that reads raw BGR frames from stdin and streams RTMPS.
     """
+    # Use a sane integer FPS for ffmpeg input rate
+    fps_int = int(round(fps)) if fps and fps > 1 else REQ_FPS
+
     cmd = [
         "ffmpeg",
         "-loglevel", "error",
@@ -177,7 +172,7 @@ def start_ffmpeg_stream(w, h, fps, rtmps_url):
         "-f", "rawvideo",
         "-pix_fmt", "bgr24",
         "-s", f"{w}x{h}",
-        "-r", str(int(fps)),
+        "-r", str(fps_int),
         "-i", "-",
 
         # no audio
@@ -247,14 +242,14 @@ def capture_and_stream_loop(cap, ffmpeg_proc, shared: SharedFrame, stop_event: t
             stop_event.set()
             break
 
-        # Update latest for ML
+        # Update latest for ML/recording
         shared.set(frame, ts)
 
 
-def ml_loop(shared: SharedFrame, stop_event: threading.Event):
+def ml_loop(shared: SharedFrame, stop_event: threading.Event, actual_fps: float):
     """
     Human detection only.
-    Records/uploads clips on human trigger.
+    Records/uploads clips on human trigger with correct playback speed.
     """
     print("[INFO] Loading YOLO model (ML thread)...")
     model = YOLO(MODEL)
@@ -264,79 +259,52 @@ def ml_loop(shared: SharedFrame, stop_event: threading.Event):
 
     ensure_events_dir()
 
-    # recording state
+    # Video writer / recording state
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # we'll convert after
     recording = False
-    recording_end_ts = 0.0
     cooldown_until = 0.0
     writer = None
     current_path = None
 
-    # throttle
+    # Correct-speed recording: record by frame count
+    fps_for_clip = float(actual_fps) if actual_fps and actual_fps > 1 else float(REQ_FPS)
+    target_frames = 0
+    frames_written = 0
+    last_written_ts = -1.0
+
+    # ML throttle (ignored while recording)
     min_dt = (1.0 / ML_MAX_FPS) if ML_MAX_FPS and ML_MAX_FPS > 0 else 0.0
     last_ml_ts = 0.0
 
     last_best = 0.0
 
-    print("[INFO] ML thread running (human detection).")
+    print(f"[INFO] ML thread running. Clip FPS={fps_for_clip:.2f}, duration={CLIP_DURATION_SEC:.2f}s")
     try:
         while not stop_event.is_set():
-            frame, _ = shared.get()
+            frame, ts = shared.get()
             if frame is None:
                 time.sleep(0.01)
                 continue
 
             now = time.time()
 
-            if min_dt > 0 and (now - last_ml_ts) < min_dt:
-                time.sleep(0.005)
-                continue
-            last_ml_ts = now
-
-            # downscale for ML
-            small = cv2.resize(frame, (INFER_W, INFER_H), interpolation=cv2.INTER_AREA)
-
-            det = model.predict(
-                source=small,
-                imgsz=IMGSZ,
-                conf=BASE_CONF,
-                classes=[HUMAN_CLASS_ID],
-                verbose=False,
-            )
-            last_best = best_conf_from_det(det)
-
-            # trigger clip
-            if (last_best >= HUMAN_CONF_TRIGGER) and (not recording) and (now >= cooldown_until):
-                recording = True
-                recording_end_ts = now + CLIP_DURATION_SEC
-                ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"human_clip_{ts_str}.mp4"
-                current_path = os.path.join(EVENTS_DIR, filename)
-
-                writer = cv2.VideoWriter(current_path, fourcc, float(REQ_FPS), (frame.shape[1], frame.shape[0]))
-                if not writer.isOpened():
-                    try:
-                        writer.release()
-                    except Exception:
-                        pass
-                    writer = None
-                    recording = False
-                    print(f"[{ts_str}] Failed to open VideoWriter")
-                else:
-                    print(f"[{ts_str}] Human trigger (conf={last_best:.2f}) -> recording {current_path}")
-
-            # write frames while recording (uses the latest full-res frames)
+            # ---------- Recording (write NEW frames at camera rate) ----------
             if recording and writer:
-                writer.write(frame)
-                if now >= recording_end_ts:
+                # Only write when a new frame arrives
+                if ts != last_written_ts:
+                    writer.write(frame)
+                    last_written_ts = ts
+                    frames_written += 1
+
+                # Stop after we've written enough frames
+                if frames_written >= target_frames:
                     writer.release()
                     writer = None
                     recording = False
-
-                    cooldown_until = now + COOLDOWN_SEC
+                    cooldown_until = time.time() + COOLDOWN_SEC
 
                     try:
-                        print(f"[INFO] Saved clip: {current_path}. Converting to H.264...")
+                        print(f"[INFO] Saved clip: {current_path} ({frames_written} frames). Converting to H.264...")
                         h264_path = convert_to_h264_ffmpeg(current_path)
                         print(f"[INFO] Uploading: {h264_path}")
                         upload_clip(h264_path, jwt_token, CLIP_DURATION_SEC)
@@ -362,6 +330,54 @@ def ml_loop(shared: SharedFrame, stop_event: threading.Event):
                     finally:
                         current_path = None
 
+                # While recording, skip ML throttle logic to keep capture smooth
+                continue
+
+            # ---------- ML Throttle (only when NOT recording) ----------
+            if min_dt > 0 and (now - last_ml_ts) < min_dt:
+                time.sleep(0.005)
+                continue
+            last_ml_ts = now
+
+            # downscale for ML
+            small = cv2.resize(frame, (INFER_W, INFER_H), interpolation=cv2.INTER_AREA)
+
+            det = model.predict(
+                source=small,
+                imgsz=IMGSZ,
+                conf=BASE_CONF,
+                classes=[HUMAN_CLASS_ID],
+                verbose=False,
+            )
+            last_best = best_conf_from_det(det)
+
+            # trigger clip
+            if (last_best >= HUMAN_CONF_TRIGGER) and (now >= cooldown_until):
+                ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"human_clip_{ts_str}.mp4"
+                current_path = os.path.join(EVENTS_DIR, filename)
+
+                # Set target number of frames for the clip
+                target_frames = max(1, int(round(fps_for_clip * CLIP_DURATION_SEC)))
+                frames_written = 0
+                last_written_ts = -1.0
+
+                writer = cv2.VideoWriter(current_path, fourcc, fps_for_clip, (frame.shape[1], frame.shape[0]))
+                if not writer.isOpened():
+                    try:
+                        writer.release()
+                    except Exception:
+                        pass
+                    writer = None
+                    current_path = None
+                    print(f"[{ts_str}] Failed to open VideoWriter")
+                else:
+                    recording = True
+                    print(f"[{ts_str}] Human trigger (conf={last_best:.2f}) -> recording {current_path} ({target_frames} frames)")
+
+            # tiny sleep to reduce CPU spin
+            time.sleep(0.001)
+
     finally:
         if writer:
             writer.release()
@@ -369,7 +385,7 @@ def ml_loop(shared: SharedFrame, stop_event: threading.Event):
 
 def main():
     if platform.system() == "Windows":
-        print("[WARN] This is intended for Raspberry Pi / Linux.")
+        print("[WARN] This script is intended for Raspberry Pi / Linux.")
 
     ensure_ffmpeg_available()
 
@@ -396,7 +412,7 @@ def main():
     )
     t_ml = threading.Thread(
         target=ml_loop,
-        args=(shared, stop_event),
+        args=(shared, stop_event, float(actual_fps)),
         daemon=True,
     )
 
